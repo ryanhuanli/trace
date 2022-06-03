@@ -322,18 +322,22 @@ fn construct_traced_block(
     let arg_idents = extract_arg_idents(args, attr_applied, &sig);
     let arg_idents_format = arg_idents
         .iter()
-        .map(|arg_ident| format!("{} = {{:?}}", arg_ident))
+        .map(|arg_ident| format!("{}={{:?}}", arg_ident))
         .collect::<Vec<_>>()
         .join(", ");
 
     let pretty = if args.pretty { "#" } else { "" };
     let entering_format = format!(
-        "{{:depth$}}{} Entering {}({})",
+        "{{:indent$}}{}{}({}) {{{{{{{{{{{{{{depth}}",
         args.prefix_enter, sig.ident, arg_idents_format
     );
     let exiting_format = format!(
-        "{{:depth$}}{} Exiting {} = {{:{}?}}",
+        "{{:indent$}}{}{}[{{:.3?}}] = {{:{}?}}",
         args.prefix_exit, sig.ident, pretty
+    );
+    let timeout_format = format!(
+        "{}({})",
+        sig.ident, arg_idents_format
     );
 
     let pause_stmt = if args.pause {
@@ -347,21 +351,42 @@ fn construct_traced_block(
     };
 
     let printer = if args.logging {
-        quote! { log::trace! }
+        quote! { trace! }
     } else {
         quote! { println! }
     };
 
+    let show_enter = args.prefix_enter != "";
+    let show_exit = args.prefix_exit != "";
+
+	let timeout :f64 = args.timeout;
+    let timeout_ms :u64 = (timeout * 1000 as f64) as u64;
     parse_quote! {{
-        #printer(#entering_format, "", #(#arg_idents,)* depth = DEPTH.with(|d| d.get()));
+        let trace_depth = DEPTH.with(|d| d.get());
+        let trace_timeout_msg = format!(#timeout_format, #(#arg_idents,)*);
+        if #show_enter {
+            #printer(#entering_format, "", #(#arg_idents,)* indent = 2*trace_depth, depth=trace_depth+1);
+        }
         #pause_stmt
+
+        let trace_timer = std::time::Instant::now();
+
         DEPTH.with(|d| d.set(d.get() + 1));
         let mut fn_closure = move || #original_block;
-        let fn_return_value = fn_closure();
+        let trace_ret = fn_closure();
         DEPTH.with(|d| d.set(d.get() - 1));
-        #printer(#exiting_format, "", fn_return_value, depth = DEPTH.with(|d| d.get()));
+
+        let trace_runtime = trace_timer.elapsed();
+        let trace_timeout = std::time::Duration::from_millis(#timeout_ms);
+        if #timeout >= 0f64 && trace_runtime >= trace_timeout {
+			warn!("{:.3?} > {:.3?} : {}", trace_runtime, trace_timeout, trace_timeout_msg);
+        }
+
+        if #show_exit {
+            #printer(#exiting_format, "", trace_runtime, trace_ret, indent = 2*trace_depth);
+        }
         #pause_stmt
-        fn_return_value
+        trace_ret
     }}
 }
 

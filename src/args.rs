@@ -6,6 +6,7 @@ pub(crate) struct Args {
     pub(crate) prefix_enter: String,
     pub(crate) prefix_exit: String,
     pub(crate) filter: Filter,
+    pub(crate) timeout: f64,
     pub(crate) pause: bool,
     pub(crate) pretty: bool,
     pub(crate) logging: bool,
@@ -17,11 +18,13 @@ pub(crate) enum Filter {
     Disable(HashSet<proc_macro2::Ident>),
 }
 
-const DEFAULT_PREFIX_ENTER: &str = "[+]";
-const DEFAULT_PREFIX_EXIT: &str = "[-]";
+const DEFAULT_PREFIX_ENTER: &str = "[+] ";
+// const DEFAULT_PREFIX_EXIT: &str = "[-] ";
+const DEFAULT_PREFIX_EXIT: &str = "";
 const DEFAULT_PAUSE: bool = false;
 const DEFAULT_PRETTY: bool = false;
-const DEFAULT_LOGGING: bool = false;
+const DEFAULT_LOGGING: bool = true;
+const DEFAULT_TIMEOUT: f64 = -1f64;
 
 impl Args {
     pub(crate) fn from_raw_args(raw_args: syn::AttributeArgs) -> Result<Self, Vec<syn::Error>> {
@@ -35,6 +38,7 @@ impl Args {
             Pause(proc_macro2::Span, bool),
             Pretty(proc_macro2::Span, bool),
             Logging(proc_macro2::Span, bool),
+            Timeout(proc_macro2::Span, f64),
         }
 
         // Parse arguments
@@ -48,6 +52,7 @@ impl Args {
                     Pause,
                     Pretty,
                     Logging,
+                    Timeout,
                 }
 
                 let ident = &meta.path().segments.first().unwrap().ident;
@@ -59,6 +64,7 @@ impl Args {
                     "pause" => ArgName::Pause,
                     "pretty" => ArgName::Pretty,
                     "logging" => ArgName::Logging,
+                    "timeout" => ArgName::Timeout,
                     _ => {
                         return Err(vec![syn::Error::new_spanned(
                             ident.clone(),
@@ -115,6 +121,7 @@ impl Args {
                         ArgName::Pause => Ok(Arg::Pause(meta.span(), true)),
                         ArgName::Pretty => Ok(Arg::Pretty(meta.span(), true)),
                         ArgName::Logging => Ok(Arg::Logging(meta.span(), true)),
+                        ArgName::Timeout => Ok(Arg::Timeout(meta.span(), 0.0f64)),
 
                         ArgName::PrefixEnter => Err(prefix_enter_type_error()),
                         ArgName::PrefixExit => Err(prefix_exit_type_error()),
@@ -172,6 +179,7 @@ impl Args {
                         ArgName::Pause => Err(pause_type_error()),
                         ArgName::Pretty => Err(pretty_type_error()),
                         ArgName::Logging => Err(logging_type_error()),
+                        ArgName::Timeout => Err(logging_type_error()),
                     },
                     syn::Meta::NameValue(syn::MetaNameValue { ref lit, .. }) => match arg_name {
                         ArgName::PrefixEnter => match *lit {
@@ -190,6 +198,20 @@ impl Args {
                             _ => Err(vec![syn::Error::new_spanned(
                                 lit,
                                 "`prefix_exit` must have a string value",
+                            )]),
+                        },
+                        ArgName::Timeout => match *lit {
+                            syn::Lit::Int(ref s) => {
+								let v:i64 = s.base10_parse().unwrap();
+                                Ok(Arg::Timeout(meta.span(), v as f64))
+                            }
+                            syn::Lit::Float(ref s) => {
+								let v:f64 = s.base10_parse().unwrap();
+                                Ok(Arg::Timeout(meta.span(), v))
+                            }
+                            _ => Err(vec![syn::Error::new_spanned(
+                                lit,
+                                "`timeout` must have a float value",
                             )]),
                         },
 
@@ -214,6 +236,7 @@ impl Args {
         let mut pause_args = vec![];
         let mut pretty_args = vec![];
         let mut logging_args = vec![];
+        let mut timeout_args = vec![];
         let mut errors = vec![];
 
         // Group arguments of the same type and errors
@@ -227,6 +250,7 @@ impl Args {
                     Arg::Pause(span, b) => pause_args.push((span, b)),
                     Arg::Pretty(span, b) => pretty_args.push((span, b)),
                     Arg::Logging(span, b) => logging_args.push((span, b)),
+                    Arg::Timeout(span, b) => timeout_args.push((span, b)),
                 },
                 Err(es) => errors.extend(es),
             }
@@ -282,6 +306,13 @@ impl Args {
                     .map(|(span, _)| syn::Error::new(*span, "duplicate `logging`")),
             );
         }
+        if timeout_args.len() >= 2 {
+            errors.extend(
+                timeout_args
+                    .iter()
+                    .map(|(span, _)| syn::Error::new(*span, "duplicate `timeout`")),
+            );
+        }
 
         // Report the presence of mutually exclusive arguments
         if enable_args.len() == 1 && disable_args.len() == 1 {
@@ -315,6 +346,7 @@ impl Args {
             let pause = first_no_span!(pause_args).unwrap_or(DEFAULT_PAUSE);
             let pretty = first_no_span!(pretty_args).unwrap_or(DEFAULT_PRETTY);
             let logging = first_no_span!(logging_args).unwrap_or(DEFAULT_LOGGING);
+            let timeout = first_no_span!(timeout_args).unwrap_or(DEFAULT_TIMEOUT);
 
             Ok(Self {
                 prefix_enter,
@@ -323,6 +355,7 @@ impl Args {
                 pause,
                 pretty,
                 logging,
+                timeout,
             })
         } else {
             Err(errors)
